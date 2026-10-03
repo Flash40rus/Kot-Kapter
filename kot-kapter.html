@@ -13,10 +13,19 @@
     touch-action:none;overscroll-behavior:none;
   }
   canvas{display:block;position:fixed;inset:0;width:100%;height:100%;}
+  #musicBtn{
+    position:fixed; top:14px; left:14px; z-index:10;
+    width:44px; height:44px; border-radius:50%;
+    border:none; background:rgba(255,255,255,0.85);
+    font-size:22px; cursor:pointer; padding:0;
+    box-shadow:0 2px 8px rgba(0,0,0,0.2);
+    -webkit-tap-highlight-color:transparent;
+  }
 </style>
 </head>
 <body>
 <canvas id="game"></canvas>
+<button id="musicBtn">🔊</button>
 <script>
 'use strict';
 
@@ -40,7 +49,6 @@ function resize() {
   cv.style.width  = cw + 'px';
   cv.style.height = ch + 'px';
 
-  // логическая ширина мира ~640, высота минимум 300
   S = Math.min(cw / 640, ch / 300);
   W = cw / S;
   H = ch / S;
@@ -57,26 +65,18 @@ window.addEventListener('orientationchange', () => setTimeout(resize, 250));
    ПАЛИТРЫ (день → закат → ночь → рассвет)
    ============================================================ */
 const PALETTES = [
-  { // День
-    sky1:'#2FC0FF', sky2:'#C8F0FF', sun:'#FFE066', sunGlow:'#FFD43B',
+  { sky1:'#2FC0FF', sky2:'#C8F0FF', sun:'#FFE066', sunGlow:'#FFD43B',
     far:'#A8DFA8', near:'#74C97E', grass:'#86E05A', grassDark:'#4CAF50',
-    dirt:'#A1724E', dirtDark:'#7A5238', cloud:'#FFFFFF', star:0
-  },
-  { // Закат
-    sky1:'#FF7A45', sky2:'#FFD98A', sun:'#FFF176', sunGlow:'#FFB300',
+    dirt:'#A1724E', dirtDark:'#7A5238', cloud:'#FFFFFF', star:0 },
+  { sky1:'#FF7A45', sky2:'#FFD98A', sun:'#FFF176', sunGlow:'#FFB300',
     far:'#C489B8', near:'#9A63A8', grass:'#E0A0D8', grassDark:'#B06FB0',
-    dirt:'#7B4E8A', dirtDark:'#5A3668', cloud:'#FFE8D0', star:0
-  },
-  { // Ночь
-    sky1:'#0E1440', sky2:'#3B2E6E', sun:'#F2F0D8', sunGlow:'#B9B6E8',
+    dirt:'#7B4E8A', dirtDark:'#5A3668', cloud:'#FFE8D0', star:0 },
+  { sky1:'#0E1440', sky2:'#3B2E6E', sun:'#F2F0D8', sunGlow:'#B9B6E8',
     far:'#2C3A6E', near:'#1E2A52', grass:'#3E6B8A', grassDark:'#2A4A63',
-    dirt:'#2A2438', dirtDark:'#1A1626', cloud:'#A9B6DE', star:1
-  },
-  { // Рассвет
-    sky1:'#5B6BFF', sky2:'#FFC7E8', sun:'#FFE1EC', sunGlow:'#FF9EC4',
+    dirt:'#2A2438', dirtDark:'#1A1626', cloud:'#A9B6DE', star:1 },
+  { sky1:'#5B6BFF', sky2:'#FFC7E8', sun:'#FFE1EC', sunGlow:'#FF9EC4',
     far:'#A9BCEE', near:'#8AA0DC', grass:'#93DCC4', grassDark:'#5FBFA6',
-    dirt:'#8A7A98', dirtDark:'#665878', cloud:'#FFF2F8', star:0.35
-  }
+    dirt:'#8A7A98', dirtDark:'#665878', cloud:'#FFF2F8', star:0.35 }
 ];
 
 const _rgbCache = Object.create(null);
@@ -99,7 +99,7 @@ function getPalette(score) {
   const i  = ((fi % PALETTES.length) + PALETTES.length) % PALETTES.length;
   const j  = (i + 1) % PALETTES.length;
   let f = cycle - fi;
-  f = f * f * (3 - 2 * f);                 // smoothstep
+  f = f * f * (3 - 2 * f);
   const A = PALETTES[i], B = PALETTES[j], out = {};
   for (const k in A) {
     const a = A[k], b = B[k];
@@ -112,8 +112,8 @@ function getPalette(score) {
    ФИЗИКА / КОНСТАНТЫ
    ============================================================ */
 const GRAVITY   = 3400;
-const JUMP_V    = 1000;   // высота прыжка ≈ 147
-const JUMP2_V   = 880;    // второй прыжок
+const JUMP_V    = 1000;
+const JUMP2_V   = 880;
 const SPEED_MIN = 430;
 const SPEED_MAX = 970;
 
@@ -121,11 +121,121 @@ let game = null;
 let lastTime = 0;
 
 /* ============================================================
+   МУЗЫКА И ЗВУКИ (Web Audio API, без файлов)
+   ============================================================ */
+let audioCtx = null;
+let musicOn = true;
+let musicTimer = null;
+let musicStep = 0;
+
+const MELODY = [
+  523.25, 659.25, 783.99, 659.25,
+  587.33, 698.46, 880.00, 698.46,
+  659.25, 783.99, 987.77, 783.99,
+  587.33, 523.25, 493.88, 392.00
+];
+const BASS = [
+  130.81, 130.81, 146.83, 146.83,
+  164.81, 164.81, 146.83, 130.81
+];
+
+function initAudio() {
+  if (audioCtx) return;
+  try {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  } catch (e) {
+    audioCtx = null;
+  }
+}
+
+function playNote(freq, duration, type, volume, time) {
+  if (!audioCtx) return;
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.type = type;
+  osc.frequency.value = freq;
+  gain.gain.setValueAtTime(0, time);
+  gain.gain.linearRampToValueAtTime(volume, time + 0.01);
+  gain.gain.exponentialRampToValueAtTime(0.001, time + duration);
+  osc.connect(gain);
+  gain.connect(audioCtx.destination);
+  osc.start(time);
+  osc.stop(time + duration);
+}
+
+function musicTick() {
+  if (!audioCtx || !musicOn) return;
+  const now = audioCtx.currentTime;
+  const step = musicStep % MELODY.length;
+
+  playNote(MELODY[step], 0.13, 'triangle', 0.05, now);
+
+  if (step % 2 === 0) {
+    playNote(BASS[(step / 2) % BASS.length], 0.22, 'square', 0.035, now);
+  }
+
+  if (step % 4 === 2) {
+    const buf = audioCtx.createBuffer(1, 1024, audioCtx.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * 0.3;
+    const src = audioCtx.createBufferSource();
+    src.buffer = buf;
+    const g = audioCtx.createGain();
+    g.gain.setValueAtTime(0.02, now);
+    g.gain.exponentialRampToValueAtTime(0.001, now + 0.05);
+    src.connect(g);
+    g.connect(audioCtx.destination);
+    src.start(now);
+    src.stop(now + 0.05);
+  }
+
+  musicStep++;
+  musicTimer = setTimeout(musicTick, 140);
+}
+
+function startMusic() {
+  initAudio();
+  if (!audioCtx || musicTimer) return;
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+  musicOn = true;
+  musicTick();
+}
+
+function stopMusic() {
+  musicOn = false;
+  if (musicTimer) {
+    clearTimeout(musicTimer);
+    musicTimer = null;
+  }
+}
+
+function playJumpSound() {
+  if (!audioCtx) return;
+  const now = audioCtx.currentTime;
+  playNote(600, 0.08, 'square', 0.04, now);
+  playNote(900, 0.08, 'square', 0.04, now + 0.05);
+}
+
+function playHitSound() {
+  if (!audioCtx) return;
+  const now = audioCtx.currentTime;
+  playNote(300, 0.15, 'sawtooth', 0.06, now);
+  playNote(180, 0.3, 'sawtooth', 0.06, now + 0.12);
+}
+
+function playFishSound() {
+  if (!audioCtx) return;
+  const now = audioCtx.currentTime;
+  playNote(880, 0.08, 'triangle', 0.05, now);
+  playNote(1175, 0.1, 'triangle', 0.05, now + 0.06);
+}
+
+/* ============================================================
    ИНИЦИАЛИЗАЦИЯ
    ============================================================ */
 function reset() {
   game = {
-    phase: 'ready',              // ready | playing | over
+    phase: 'ready',
     t: 0,
     runPhase: 0,
     dist: 0,
@@ -193,7 +303,7 @@ function spawnObstacle() {
 function spawnFish() {
   game.fishes.push({
     x: W + 60,
-    y: 70 + Math.random() * 90,   // высота над землёй
+    y: 70 + Math.random() * 90,
     w: 30, h: 18,
     seed: Math.random() * 10
   });
@@ -233,6 +343,7 @@ function spawnRing(x, y) {
    ============================================================ */
 function pressJump() {
   if (!game) return;
+  startMusic();
 
   if (game.phase === 'ready') {
     game.phase = 'playing';
@@ -254,10 +365,12 @@ function doJump() {
     c.jumps = 1;
     c.h = 0.1;
     spawnDust(CATX, GROUND_Y, 6, '#E8D9B0');
+    playJumpSound();
   } else if (c.jumps < 2) {
     c.vy = JUMP2_V;
     c.jumps = 2;
     spawnRing(CATX, GROUND_Y - c.h);
+    playJumpSound();
   }
 }
 
@@ -283,7 +396,6 @@ function update(dt) {
             : g.phase === 'ready'   ? 210
             : 0;
 
-  /* --- счёт и скорость --- */
   if (g.phase === 'playing') {
     g.dist  += g.speed * dt;
     g.speed  = Math.min(SPEED_MIN + g.dist / 100, SPEED_MAX);
@@ -291,18 +403,15 @@ function update(dt) {
     if (g.score > g.best) { g.best = g.score; g.newBest = true; }
   }
 
-  /* --- прокрутка --- */
   g.scroll   += spd * dt;
   g.runPhase += (spd / 26) * dt;
 
-  /* --- прыжок (буфер) --- */
   g.jumpBuf -= dt;
   if (g.jumpBuf > 0 && c.onGround && g.phase === 'playing') {
     g.jumpBuf = 0;
     doJump();
   }
 
-  /* --- физика кота --- */
   if (g.phase !== 'over') {
     const wasAir = !c.onGround;
     c.vy -= GRAVITY * dt;
@@ -322,12 +431,10 @@ function update(dt) {
   }
   c.squash = Math.max(0, c.squash - dt * 6);
 
-  /* --- мигание --- */
   c.nextBlink -= dt;
   if (c.nextBlink <= 0) { c.blink = 0.12; c.nextBlink = 2 + Math.random() * 4; }
   c.blink = Math.max(0, c.blink - dt);
 
-  /* --- облака --- */
   for (const cl of g.clouds) {
     cl.x -= (spd * cl.sp + 6) * dt;
     if (cl.x < -180 * cl.s) {
@@ -337,21 +444,18 @@ function update(dt) {
     }
   }
 
-  /* --- препятствия --- */
   for (let i = g.obstacles.length - 1; i >= 0; i--) {
     const o = g.obstacles[i];
     o.x -= spd * dt;
     if (o.x + o.w < -120) g.obstacles.splice(i, 1);
   }
 
-  /* --- рыбки --- */
   for (let i = g.fishes.length - 1; i >= 0; i--) {
     const f = g.fishes[i];
     f.x -= spd * dt;
     if (f.x + f.w < -120) g.fishes.splice(i, 1);
   }
 
-  /* --- спавн --- */
   if (g.phase === 'playing') {
     g.spawnT -= dt;
     if (g.spawnT <= 0) {
@@ -365,7 +469,6 @@ function update(dt) {
     }
   }
 
-  /* --- частицы --- */
   for (let i = g.parts.length - 1; i >= 0; i--) {
     const p = g.parts[i];
     p.x += p.vx * dt;
@@ -375,12 +478,10 @@ function update(dt) {
     if (p.life <= 0) g.parts.splice(i, 1);
   }
 
-  /* --- коллизии --- */
   if (g.phase === 'playing') {
     const feet = GROUND_Y - c.h;
     const box = { x: CATX - 18, y: feet - 56, w: 42, h: 56 };
 
-    // препятствия
     for (const o of g.obstacles) {
       const ob = { x: o.x + 3, y: GROUND_Y - o.y - o.h, w: o.w - 6, h: o.h };
       if (box.x < ob.x + ob.w && box.x + box.w > ob.x &&
@@ -390,20 +491,19 @@ function update(dt) {
       }
     }
 
-    // рыбки
     for (let i = g.fishes.length - 1; i >= 0; i--) {
       const f = g.fishes[i];
       const fb = { x: f.x, y: GROUND_Y - f.y - f.h, w: f.w, h: f.h };
       if (box.x < fb.x + fb.w && box.x + box.w > fb.x &&
           box.y < fb.y + fb.h && box.y + box.h > fb.y) {
-        g.dist += 900;                        // бонус
+        g.dist += 900;
         spawnRing(f.x + f.w / 2, GROUND_Y - f.y - f.h / 2);
+        playFishSound();
         g.fishes.splice(i, 1);
       }
     }
   }
 
-  /* --- таймеры экранов --- */
   if (g.phase === 'over') {
     g.overT += dt;
     g.shake = Math.max(0, g.shake - dt * 3);
@@ -415,6 +515,7 @@ function gameOver() {
   g.phase  = 'over';
   g.overT  = 0;
   g.shake  = 1;
+  playHitSound();
 
   const feet = GROUND_Y - g.cat.h;
   spawnDust(CATX, feet, 16, '#FFFFFF');
@@ -466,21 +567,21 @@ function drawHills(scroll, baseY, amp, step, color) {
   ctx.fill();
 }
 
-/* ---------- Кот ---------- */
+/* ---------- Кот (похож на фото) ---------- */
 function drawCat(px, feetY) {
   const c = game.cat;
-  const ORANGE   = '#F5A742';
-  const ORANGE_D = '#DE8A2B';
-  const CREAM    = '#FFE8C8';
-  const PINK     = '#FF9BB3';
-  const DARK     = '#3A2A1E';
+  const FUR_BASE = '#8B7D6B';
+  const FUR_DARK = '#5C4F42';
+  const WHITE    = '#FFFFFF';
+  const PINK     = '#FFB6C1';
+  const DARK     = '#2A1E1E';
+  const IRIS     = '#A2C11C';
   const air      = !c.onGround;
   const dead     = game.phase === 'over';
 
   ctx.save();
   ctx.translate(px, feetY);
 
-  // squash & stretch при приземлении
   const sq = c.squash;
   ctx.scale(1 + sq * 0.16, 1 - sq * 0.16);
 
@@ -489,17 +590,22 @@ function drawCat(px, feetY) {
 
   ctx.lineCap = 'round';
 
-  /* --- хвост --- */
+  /* хвост */
   const wag = dead ? 0 : Math.sin(game.t * 9) * 6;
-  ctx.strokeStyle = ORANGE_D;
+  ctx.strokeStyle = FUR_DARK;
   ctx.lineWidth = 7;
   ctx.beginPath();
   ctx.moveTo(-20, -30);
   ctx.quadraticCurveTo(-44, -34 + wag, -42, -60 + wag * 1.2);
   ctx.stroke();
 
-  /* --- лапы --- */
-  ctx.strokeStyle = ORANGE_D;
+  ctx.fillStyle = WHITE;
+  ctx.beginPath();
+  ctx.arc(-42, -60 + wag * 1.2, 4.5, 0, 6.283);
+  ctx.fill();
+
+  /* лапы */
+  ctx.strokeStyle = FUR_BASE;
   ctx.lineWidth = 6;
   const legs = [-15, -5, 9, 18];
   for (let i = 0; i < 4; i++) {
@@ -518,54 +624,72 @@ function drawCat(px, feetY) {
     ctx.moveTo(lx, -18);
     ctx.lineTo(fx, fy);
     ctx.stroke();
+
+    ctx.fillStyle = WHITE;
+    ctx.beginPath();
+    ctx.arc(fx, fy, 4, 0, 6.283);
+    ctx.fill();
   }
 
-  /* --- тело --- */
-  ctx.fillStyle = ORANGE;
+  /* тело */
+  ctx.fillStyle = FUR_BASE;
   ctx.beginPath();
   ctx.ellipse(0, -30, 26, 17, 0, 0, 6.283);
   ctx.fill();
 
-  // животик
-  ctx.fillStyle = CREAM;
+  ctx.fillStyle = WHITE;
   ctx.beginPath();
   ctx.ellipse(2, -24, 17, 11, 0, 0, 6.283);
   ctx.fill();
 
-  // полоски
-  ctx.strokeStyle = ORANGE_D;
+  ctx.strokeStyle = FUR_DARK;
   ctx.lineWidth = 2.6;
   ctx.beginPath();
-  ctx.moveTo(-14, -43); ctx.quadraticCurveTo(-10, -47, -6, -43);
-  ctx.moveTo(-3,  -45); ctx.quadraticCurveTo(1,  -49, 5,  -45);
+  ctx.moveTo(-16, -42); ctx.quadraticCurveTo(-12, -46, -8, -42);
+  ctx.moveTo(-6,  -45); ctx.quadraticCurveTo(-2,  -49, 2,  -45);
+  ctx.moveTo(4,   -43); ctx.quadraticCurveTo(8,   -47, 12, -43);
   ctx.stroke();
 
-  /* --- голова --- */
-  ctx.fillStyle = ORANGE;
+  /* голова */
+  ctx.fillStyle = FUR_BASE;
   ctx.beginPath();
   ctx.arc(20, -44, 15, 0, 6.283);
   ctx.fill();
 
-  // уши
   ctx.beginPath();
   ctx.moveTo(10, -54); ctx.lineTo(11, -70); ctx.lineTo(24, -57); ctx.closePath(); ctx.fill();
   ctx.beginPath();
   ctx.moveTo(20, -57); ctx.lineTo(32, -69); ctx.lineTo(33, -51); ctx.closePath(); ctx.fill();
 
-  // внутренние ушки
   ctx.fillStyle = PINK;
   ctx.beginPath();
   ctx.moveTo(13, -56); ctx.lineTo(14, -66); ctx.lineTo(22, -58); ctx.closePath(); ctx.fill();
   ctx.beginPath();
   ctx.moveTo(22, -58); ctx.lineTo(30, -65); ctx.lineTo(31, -54); ctx.closePath(); ctx.fill();
 
-  /* --- мордочка --- */
-  ctx.fillStyle = CREAM;
+  /* белая полоска на носу */
+  ctx.fillStyle = WHITE;
   ctx.beginPath();
-  ctx.ellipse(28, -39, 10, 8, 0, 0, 6.283);
+  ctx.moveTo(14, -55);
+  ctx.lineTo(22, -55);
+  ctx.lineTo(20, -39);
+  ctx.lineTo(17, -39);
+  ctx.closePath();
   ctx.fill();
 
-  // глаза
+  ctx.beginPath();
+  ctx.ellipse(28, -39, 11, 9, 0, 0, 6.283);
+  ctx.fill();
+
+  /* тёмная "М" на лбу */
+  ctx.strokeStyle = FUR_DARK;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(10, -60); ctx.lineTo(15, -55); ctx.lineTo(20, -60);
+  ctx.lineTo(25, -55); ctx.lineTo(30, -60);
+  ctx.stroke();
+
+  /* глаза */
   if (dead) {
     ctx.strokeStyle = DARK;
     ctx.lineWidth = 2;
@@ -583,15 +707,20 @@ function drawCat(px, feetY) {
     ctx.moveTo(25.5, -47); ctx.lineTo(31.5, -47);
     ctx.stroke();
   } else {
+    ctx.fillStyle = IRIS;
+    ctx.beginPath(); ctx.ellipse(16.5, -47, 3.8, 4.8, 0, 0, 6.283); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(28.5, -47, 3.8, 4.8, 0, 0, 6.283); ctx.fill();
+
     ctx.fillStyle = DARK;
-    ctx.beginPath(); ctx.ellipse(16.5, -47, 3.3, 4.2, 0, 0, 6.283); ctx.fill();
-    ctx.beginPath(); ctx.ellipse(28.5, -47, 3.3, 4.2, 0, 0, 6.283); ctx.fill();
-    ctx.fillStyle = '#FFFFFF';
-    ctx.beginPath(); ctx.arc(17.6, -48.6, 1.3, 0, 6.283); ctx.fill();
-    ctx.beginPath(); ctx.arc(29.6, -48.6, 1.3, 0, 6.283); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(16.5, -47, 1.8, 3.8, 0, 0, 6.283); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(28.5, -47, 1.8, 3.8, 0, 0, 6.283); ctx.fill();
+
+    ctx.fillStyle = WHITE;
+    ctx.beginPath(); ctx.arc(17.5, -48.5, 1.3, 0, 6.283); ctx.fill();
+    ctx.beginPath(); ctx.arc(29.5, -48.5, 1.3, 0, 6.283); ctx.fill();
   }
 
-  // нос
+  /* нос */
   ctx.fillStyle = PINK;
   ctx.beginPath();
   ctx.moveTo(32.5, -42.5);
@@ -600,18 +729,19 @@ function drawCat(px, feetY) {
   ctx.closePath();
   ctx.fill();
 
-  // усы
-  ctx.strokeStyle = 'rgba(255,255,255,0.9)';
-  ctx.lineWidth = 1.2;
+  /* усы */
+  ctx.strokeStyle = WHITE;
+  ctx.lineWidth = 1.4;
   ctx.beginPath();
-  ctx.moveTo(34, -41); ctx.lineTo(47, -45);
-  ctx.moveTo(34, -39); ctx.lineTo(48, -38);
+  ctx.moveTo(34, -41); ctx.lineTo(48, -46);
+  ctx.moveTo(34, -39); ctx.lineTo(49, -38);
+  ctx.moveTo(34, -37); ctx.lineTo(48, -34);
   ctx.stroke();
 
   ctx.restore();
 }
 
-/* ---------- Огурец (препятствие) ---------- */
+/* ---------- Огурец ---------- */
 function drawCucumber(x, y, w, h, seed) {
   const grad = ctx.createLinearGradient(x, 0, x + w, 0);
   grad.addColorStop(0,    '#3E8E41');
@@ -622,7 +752,6 @@ function drawCucumber(x, y, w, h, seed) {
   rr(x, y, w, h, Math.min(w, h) * 0.42);
   ctx.fill();
 
-  // пупырышки
   ctx.fillStyle = 'rgba(25,70,25,0.4)';
   const cols = Math.max(2, Math.round(w / 9));
   const rows = Math.max(3, Math.round(h / 13));
@@ -636,12 +765,10 @@ function drawCucumber(x, y, w, h, seed) {
     }
   }
 
-  // блик
   ctx.fillStyle = 'rgba(255,255,255,0.22)';
   rr(x + w * 0.18, y + h * 0.12, w * 0.2, h * 0.55, w * 0.1);
   ctx.fill();
 
-  // хвостик
   ctx.fillStyle = '#4E7A2A';
   ctx.beginPath();
   ctx.ellipse(x + w * 0.5, y + 2, w * 0.16, 3.5, 0, 0, 6.283);
@@ -653,18 +780,15 @@ function drawBird(x, y, w, h, t) {
   const cx = x + w * 0.55;
   const cy = y + h * 0.5;
 
-  // тело
   ctx.fillStyle = '#9AA7B8';
   ctx.beginPath();
   ctx.ellipse(cx, cy, w * 0.45, h * 0.42, 0, 0, 6.283);
   ctx.fill();
 
-  // голова
   ctx.beginPath();
   ctx.arc(x + w * 0.22, cy - h * 0.22, h * 0.28, 0, 6.283);
   ctx.fill();
 
-  // клюв
   ctx.fillStyle = '#FFB300';
   ctx.beginPath();
   ctx.moveTo(x + w * 0.1,  cy - h * 0.26);
@@ -673,20 +797,17 @@ function drawBird(x, y, w, h, t) {
   ctx.closePath();
   ctx.fill();
 
-  // глаз
   ctx.fillStyle = '#22303F';
   ctx.beginPath();
   ctx.arc(x + w * 0.22, cy - h * 0.28, 1.7, 0, 6.283);
   ctx.fill();
 
-  // крыло
   const flap = Math.sin(t * 16) * 0.9;
   ctx.fillStyle = '#7C8A9E';
   ctx.beginPath();
   ctx.ellipse(cx, cy + flap * 3, w * 0.3, h * 0.2, flap * 0.4, 0, 6.283);
   ctx.fill();
 
-  // хвост
   ctx.fillStyle = '#8A98AB';
   ctx.beginPath();
   ctx.moveTo(x + w * 0.92, cy - h * 0.12);
@@ -696,12 +817,11 @@ function drawBird(x, y, w, h, t) {
   ctx.fill();
 }
 
-/* ---------- Рыбка (бонус) ---------- */
+/* ---------- Рыбка ---------- */
 function drawFish(x, y, w, h, t) {
   const bob = Math.sin(t * 4.5) * 3;
   y += bob;
 
-  // хвост
   ctx.fillStyle = '#FF8A3D';
   ctx.beginPath();
   ctx.moveTo(x + w * 0.28, y + h * 0.5);
@@ -710,19 +830,16 @@ function drawFish(x, y, w, h, t) {
   ctx.closePath();
   ctx.fill();
 
-  // тело
   ctx.fillStyle = '#FFA94D';
   ctx.beginPath();
   ctx.ellipse(x + w * 0.55, y + h * 0.5, w * 0.42, h * 0.48, 0, 0, 6.283);
   ctx.fill();
 
-  // полоска
   ctx.fillStyle = 'rgba(255,255,255,0.4)';
   ctx.beginPath();
   ctx.ellipse(x + w * 0.55, y + h * 0.34, w * 0.3, h * 0.13, 0, 0, 6.283);
   ctx.fill();
 
-  // глаз
   ctx.fillStyle = '#FFFFFF';
   ctx.beginPath();
   ctx.arc(x + w * 0.78, y + h * 0.42, h * 0.16, 0, 6.283);
@@ -735,14 +852,12 @@ function drawFish(x, y, w, h, t) {
 
 /* ---------- Фон ---------- */
 function drawBackground(p) {
-  // небо
   const g = ctx.createLinearGradient(0, 0, 0, GROUND_Y);
   g.addColorStop(0, p.sky1);
   g.addColorStop(1, p.sky2);
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, W, H);
 
-  // звёзды
   if (p.star > 0.02) {
     ctx.fillStyle = '#FFFFFF';
     for (const s of game.stars) {
@@ -754,7 +869,6 @@ function drawBackground(p) {
     ctx.globalAlpha = 1;
   }
 
-  // солнце / луна
   const sx = W * 0.8;
   const sy = Math.min(GROUND_Y * 0.24, 150);
   const sr = Math.min(W * 0.06, 42) + 8;
@@ -769,12 +883,10 @@ function drawBackground(p) {
   ctx.fillStyle = p.sun;
   ctx.beginPath(); ctx.arc(sx, sy, sr, 0, 6.283); ctx.fill();
 
-  // облака
   for (const cl of game.clouds) {
     drawCloud(cl.x, cl.yf * GROUND_Y, cl.s, p.cloud);
   }
 
-  // холмы (параллакс)
   drawHills(game.scroll * 0.12, GROUND_Y + 4, 90, 260, p.far);
   drawHills(game.scroll * 0.28, GROUND_Y + 4, 55, 170, p.near);
 }
@@ -782,15 +894,12 @@ function drawBackground(p) {
 function drawGround(p) {
   const dirtH = H - GROUND_Y;
 
-  // земля
   ctx.fillStyle = p.dirt;
   ctx.fillRect(0, GROUND_Y, W, dirtH + 2);
 
-  // тёмный слой
   ctx.fillStyle = p.dirtDark;
   ctx.fillRect(0, GROUND_Y + Math.min(dirtH * 0.55, 90), W, dirtH);
 
-  // камешки
   const pstep = 150;
   const poff = -(((game.scroll * 0.85) % pstep) + pstep) % pstep;
   ctx.fillStyle = 'rgba(0,0,0,0.16)';
@@ -800,13 +909,11 @@ function drawGround(p) {
     ctx.beginPath(); ctx.arc(x + 96, yy + 22, 4.5, 0, 6.283); ctx.fill();
   }
 
-  // трава
   ctx.fillStyle = p.grass;
   ctx.fillRect(0, GROUND_Y, W, 20);
   ctx.fillStyle = p.grassDark;
   ctx.fillRect(0, GROUND_Y + 16, W, 6);
 
-  // травинки
   const step = 96;
   const off = -((game.scroll % step) + step) % step;
   ctx.fillStyle = p.grassDark;
@@ -818,14 +925,13 @@ function drawGround(p) {
   }
 }
 
-/* ---------- Интерфейс ---------- */
+/* ---------- HUD ---------- */
 function drawHUD(p) {
   const fs = Math.max(18, W * 0.042);
 
   ctx.textAlign = 'right';
   ctx.textBaseline = 'top';
 
-  // тень + текст счёта
   const pad = W * 0.035;
   const top = Math.max(14, H * 0.03);
 
@@ -913,19 +1019,14 @@ function render() {
 
   ctx.save();
 
-  // тряска при столкновении
   if (g.shake > 0) {
     const s = g.shake * 7;
     ctx.translate((Math.random() - 0.5) * s, (Math.random() - 0.5) * s);
   }
 
-  /* --- фон --- */
   drawBackground(p);
-
-  /* --- земля --- */
   drawGround(p);
 
-  /* --- препятствия --- */
   for (const o of g.obstacles) {
     const oy = GROUND_Y - o.y - o.h;
     if (o.type === 'cuke') {
@@ -939,12 +1040,10 @@ function render() {
     }
   }
 
-  /* --- рыбки --- */
   for (const f of g.fishes) {
     drawFish(f.x, GROUND_Y - f.y - f.h, f.w, f.h, g.t + f.seed);
   }
 
-  /* --- частицы --- */
   for (const pt of g.parts) {
     const a = Math.max(0, pt.life / pt.max);
     ctx.globalAlpha = a * 0.85;
@@ -955,11 +1054,9 @@ function render() {
   }
   ctx.globalAlpha = 1;
 
-  /* --- кот --- */
   const feet = GROUND_Y - g.cat.h;
   drawCat(CATX, feet);
 
-  /* --- интерфейс --- */
   drawHUD(p);
 
   if (g.phase === 'ready') drawReady();
@@ -975,13 +1072,27 @@ function loop(now) {
   let dt = (now - lastTime) / 1000;
   lastTime = now;
   if (!isFinite(dt) || dt < 0) dt = 0;
-  dt = Math.min(dt, 1 / 30);          // защита от «прыжков» кадра
+  dt = Math.min(dt, 1 / 30);
 
   update(dt);
   render();
 
   requestAnimationFrame(loop);
 }
+
+/* ============================================================
+   КНОПКА МУЗЫКИ
+   ============================================================ */
+document.getElementById('musicBtn').addEventListener('click', (e) => {
+  e.stopPropagation();
+  if (musicOn) {
+    stopMusic();
+    e.target.textContent = '🔇';
+  } else {
+    startMusic();
+    e.target.textContent = '🔊';
+  }
+});
 
 /* ============================================================
    СТАРТ
@@ -991,7 +1102,6 @@ reset();
 lastTime = performance.now();
 requestAnimationFrame(loop);
 
-// при смене ориентации пересобираем облака под новую ширину
 window.addEventListener('orientationchange', () => {
   setTimeout(() => { if (game && game.phase === 'ready') buildSky(); }, 300);
 });
